@@ -219,6 +219,52 @@ export function SimulationResults() {
 
   // PDF エクスポート機能（ブラウザの印刷機能を使用）
   const handleExportPDF = () => {
+    // キャッシュフローテーブルのHTMLを生成
+    const generateCashFlowTable = () => {
+      const tableHeaders = [
+        '年度', '年齢', '世帯収入', '運用収益', '生活費', '住居費', '教育費', 
+        '個人収支', '個人総資産', '売上', '経費', '法人収支', '法人総資産'
+      ];
+
+      const tableRows = years.map(year => {
+        const cf = cashFlow[year] || {};
+        const age = basicInfo.currentAge + (year - basicInfo.startYear);
+        
+        return `
+          <tr style="border-bottom: 1px solid #ddd;">
+            <td style="padding: 4px 8px; text-align: center; font-weight: bold;">${year}</td>
+            <td style="padding: 4px 8px; text-align: center;">${age}歳</td>
+            <td style="padding: 4px 8px; text-align: right;">${(cf.mainIncome || 0) + (cf.sideIncome || 0) + (cf.spouseIncome || 0)}</td>
+            <td style="padding: 4px 8px; text-align: right;">${cf.investmentIncome || 0}</td>
+            <td style="padding: 4px 8px; text-align: right;">${cf.livingExpense || 0}</td>
+            <td style="padding: 4px 8px; text-align: right;">${cf.housingExpense || 0}</td>
+            <td style="padding: 4px 8px; text-align: right;">${cf.educationExpense || 0}</td>
+            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.personalBalance || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.personalBalance || 0}</td>
+            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.personalTotalAssets || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.personalTotalAssets || 0}</td>
+            <td style="padding: 4px 8px; text-align: right;">${cf.corporateRevenue || 0}</td>
+            <td style="padding: 4px 8px; text-align: right;">${cf.corporateExpense || 0}</td>
+            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.corporateBalance || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.corporateBalance || 0}</td>
+            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.corporateTotalAssets || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.corporateTotalAssets || 0}</td>
+          </tr>
+        `;
+      }).join('');
+
+      return `
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 10px;">
+          <thead>
+            <tr style="background-color: #f3f4f6; border-bottom: 2px solid #ddd;">
+              ${tableHeaders.map(header => 
+                `<th style="padding: 8px 4px; text-align: center; font-weight: bold; border-right: 1px solid #ddd;">${header}</th>`
+              ).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRows}
+          </tbody>
+        </table>
+      `;
+    };
+
     // 印刷用のHTMLコンテンツを作成
     const printContent = `
       <!DOCTYPE html>
@@ -228,38 +274,94 @@ export function SimulationResults() {
         <title>ライフプランシミュレーション結果</title>
         <style>
           @media print {
-            body { margin: 0; padding: 20px; font-family: 'Yu Gothic', sans-serif; }
+            body { 
+              margin: 0; 
+              padding: 15px; 
+              font-family: 'Yu Gothic', 'Hiragino Sans', sans-serif; 
+              line-height: 1.4;
+            }
             .page-break { page-break-before: always; }
-            .chart-container { width: 100%; height: 400px; margin: 20px 0; }
-            .chart-container img { width: 100%; height: auto; }
-            .header { text-align: center; margin-bottom: 30px; }
-            .conditions { background: #f5f5f5; padding: 15px; margin: 20px 0; border-radius: 5px; }
-            .section-title { font-size: 18px; font-weight: bold; margin: 20px 0 10px 0; }
-            .condition-item { margin: 5px 0; font-size: 12px; }
+            .chart-container { 
+              width: 100%; 
+              height: 300px; 
+              margin: 15px 0; 
+              page-break-inside: avoid;
+            }
+            .chart-container img { 
+              width: 100%; 
+              height: auto; 
+              max-height: 300px;
+              object-fit: contain;
+            }
+            .header { 
+              text-align: center; 
+              margin-bottom: 25px; 
+              page-break-inside: avoid;
+            }
+            .conditions { 
+              background: #f8f9fa; 
+              padding: 12px; 
+              margin: 15px 0; 
+              border-radius: 5px; 
+              page-break-inside: avoid;
+              border: 1px solid #dee2e6;
+            }
+            .section-title { 
+              font-size: 16px; 
+              font-weight: bold; 
+              margin: 20px 0 10px 0; 
+              color: #1f2937;
+              border-bottom: 2px solid #3b82f6;
+              padding-bottom: 5px;
+            }
+            .condition-item { 
+              margin: 4px 0; 
+              font-size: 11px; 
+            }
+            .table-section {
+              margin: 20px 0;
+              page-break-inside: avoid;
+            }
+            .table-note {
+              font-size: 10px;
+              color: #6b7280;
+              margin-bottom: 10px;
+              font-style: italic;
+            }
           }
-          @page { margin: 20mm; }
+          @page { 
+            margin: 15mm; 
+            size: A4 landscape;
+          }
         </style>
       </head>
       <body>
         <div class="header">
-          <h1>ライフプランシミュレーション結果</h1>
-          <p>作成日: ${new Date().toLocaleDateString('ja-JP')}</p>
+          <h1 style="color: #1f2937; margin-bottom: 5px;">ライフプランシミュレーション結果</h1>
+          <p style="margin: 0; color: #6b7280;">作成日: ${new Date().toLocaleDateString('ja-JP')}</p>
         </div>
         
         <div class="conditions">
-          <h2 class="section-title">設定条件</h2>
+          <h2 class="section-title" style="margin-top: 0;">設定条件</h2>
           ${getConditionSummary().split(' | ').map(condition => 
             `<div class="condition-item">• ${condition}</div>`
           ).join('')}
         </div>
 
-        <div class="section-title">個人キャッシュフロー</div>
+        <div class="table-section">
+          <h2 class="section-title">キャッシュフロー表</h2>
+          <div class="table-note">※ 金額の単位：万円　※ 赤字はマイナス、緑字はプラスを表示</div>
+          ${generateCashFlowTable()}
+        </div>
+
+        <div class="page-break"></div>
+        
+        <div class="section-title">個人キャッシュフロー推移</div>
         <div class="chart-container">
           <img src="${personalChartRef.current?.canvas?.toDataURL('image/png') || ''}" alt="個人キャッシュフローグラフ" />
         </div>
 
-        <div class="page-break"></div>
-        <div class="section-title">法人キャッシュフロー</div>
+        <div class="section-title">法人キャッシュフロー推移</div>
         <div class="chart-container">
           <img src="${corporateChartRef.current?.canvas?.toDataURL('image/png') || ''}" alt="法人キャッシュフローグラフ" />
         </div>
@@ -451,7 +553,7 @@ export function SimulationResults() {
         </div>
         <p className="text-sm text-gray-600 mt-2">
           エクセル形式：詳細なデータをCSVファイルで出力します<br/>
-          PDF形式：グラフを含むレポートをブラウザの印刷機能でPDF出力します
+          PDF形式：キャッシュフロー表とグラフを含むレポートを印刷機能でPDF出力します
         </p>
       </div>
 
