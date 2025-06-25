@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSimulatorStore } from '@/store/simulator';
 import {
   Chart as ChartJS,
@@ -27,6 +27,7 @@ ChartJS.register(
 );
 
 export function SimulationResults() {
+  const store = useSimulatorStore();
   const { 
     basicInfo, 
     cashFlow,
@@ -35,11 +36,14 @@ export function SimulationResults() {
     expenseData,
     setCurrentStep,
     initializeCashFlow 
-  } = useSimulatorStore();
+  } = store;
   
   // チャートの参照を保存するためのref
   const personalChartRef = useRef<any>(null);
   const corporateChartRef = useRef<any>(null);
+  
+  // 共有URL生成の状態管理
+  const [shareUrlStatus, setShareUrlStatus] = useState<'idle' | 'generating' | 'copied' | 'error'>('idle');
   
   // 結果表示前に最新のデータでキャッシュフローを同期
   useEffect(() => {
@@ -51,33 +55,92 @@ export function SimulationResults() {
     (_, i) => basicInfo.startYear + i
   );
 
+  // グラフ用オプション（共通）
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      mode: 'index' as const,
+      intersect: false,
+    },
+    plugins: {
+      legend: {
+        position: 'top' as const,
+        labels: {
+          boxWidth: 12,
+          padding: 10,
+        },
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context: any) {
+            let label = context.dataset.label || '';
+            if (label) {
+              label += ': ';
+            }
+            if (context.parsed.y !== null) {
+              label += context.parsed.y + '万円';
+            }
+            return label;
+          }
+        }
+      }
+    },
+    scales: {
+      y: {
+        ticks: {
+          callback: function(value: any) {
+            return value + '万円';
+          }
+        }
+      },
+      x: {
+        ticks: {
+          maxRotation: 0,
+          callback: function(value: any, index: number) {
+            const year = years[index];
+            const age = basicInfo.currentAge + (year - basicInfo.startYear);
+            return `${year}年\n${age}歳`;
+          }
+        }
+      }
+    }
+  };
+
+  // 個人キャッシュフロー - 要求に合わせた表示項目
   const personalData = {
     labels: years,
     datasets: [
       {
-        label: '世帯収入',
+        label: '総収入',
         data: years.map(year => {
-          const cf = cashFlow[year];
-          if (!cf) return 0;
-          return cf.mainIncome + cf.sideIncome + cf.spouseIncome;
+          const cf = cashFlow[year] || {};
+          let personalIncome = 0;
+          if (cf.mainIncome) personalIncome += cf.mainIncome;
+          if (cf.sideIncome) personalIncome += cf.sideIncome;
+          if (cf.spouseIncome) personalIncome += cf.spouseIncome;
+          if (cf.pensionIncome) personalIncome += cf.pensionIncome;
+          if (cf.spousePensionIncome) personalIncome += cf.spousePensionIncome;
+          if (cf.investmentIncome) personalIncome += cf.investmentIncome;
+          
+          // 追加の個人収入
+          incomeData.personal.forEach(item => {
+            const basicIncomeTypes = ['給与収入', '副業収入', '配偶者収入', '年金収入', '配偶者年金収入', '運用収益'];
+            if (!basicIncomeTypes.includes(item.name)) {
+              personalIncome += item.amounts[year] || 0;
+            }
+          });
+          
+          return personalIncome;
         }),
         borderColor: 'rgb(255, 99, 132)',
         backgroundColor: 'rgba(255, 99, 132, 0.5)',
       },
       {
-        label: '運用収益',
-        data: years.map(year => {
-          const cf = cashFlow[year];
-          return cf ? cf.investmentIncome : 0;
-        }),
-        borderColor: 'rgb(153, 102, 255)',
-        backgroundColor: 'rgba(153, 102, 255, 0.5)',
-      },
-      {
         label: '生活費',
         data: years.map(year => {
           const cf = cashFlow[year];
-          return cf ? cf.livingExpense : 0;
+          return cf ? cf.livingExpense || 0 : 0;
         }),
         borderColor: 'rgb(53, 162, 235)',
         backgroundColor: 'rgba(53, 162, 235, 0.5)',
@@ -86,43 +149,70 @@ export function SimulationResults() {
         label: '住居費',
         data: years.map(year => {
           const cf = cashFlow[year];
-          return cf ? cf.housingExpense : 0;
-        }),
-        borderColor: 'rgb(75, 192, 192)',
-        backgroundColor: 'rgba(75, 192, 192, 0.5)',
-      },
-      {
-        label: '教育費',
-        data: years.map(year => {
-          const cf = cashFlow[year];
-          return cf ? cf.educationExpense : 0;
+          return cf ? cf.housingExpense || 0 : 0;
         }),
         borderColor: 'rgb(255, 159, 64)',
         backgroundColor: 'rgba(255, 159, 64, 0.5)',
       },
       {
-        label: '運用資産',
-        data: years.map(year => cashFlow[year]?.totalInvestmentAssets || 0),
-        borderColor: 'rgb(54, 162, 235)',
-        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+        label: '教育費',
+        data: years.map(year => {
+          const cf = cashFlow[year];
+          return cf ? cf.educationExpense || 0 : 0;
+        }),
+        borderColor: 'rgb(75, 192, 192)',
+        backgroundColor: 'rgba(75, 192, 192, 0.5)',
       },
       {
-        label: '総資産',
-        data: years.map(year => cashFlow[year]?.personalTotalAssets || 0),
+        label: 'その他支出',
+        data: years.map(year => {
+          const cf = cashFlow[year];
+          let otherExpenses = cf ? (cf.otherExpense || 0) : 0;
+          if (cf && cf.loanRepayment) {
+            otherExpenses += cf.loanRepayment;
+          }
+          expenseData.personal.forEach(item => {
+            const basicExpenseTypes = ['生活費', '住居費', '教育費'];
+            if (!basicExpenseTypes.includes(item.name) && item.name !== 'その他') {
+              otherExpenses += item.amounts[year] || 0;
+            }
+          });
+          return otherExpenses;
+        }),
         borderColor: 'rgb(255, 205, 86)',
         backgroundColor: 'rgba(255, 205, 86, 0.5)',
       },
+      {
+        label: '純資産',
+        data: years.map(year => {
+          const cf = cashFlow[year];
+          let personalLiabilityTotal = 0;
+          store.liabilityData.personal.forEach(liability => {
+            personalLiabilityTotal += Math.abs(liability.amounts[year] || 0);
+          });
+          const personalNetAssets = cf ? 
+            (cf.personalNetAssets || (cf.personalTotalAssets - personalLiabilityTotal)) : 0;
+          return personalNetAssets;
+        }),
+        borderColor: 'rgb(153, 102, 255)',
+        backgroundColor: 'rgba(153, 102, 255, 0.5)',
+      }
     ],
   };
 
+  // 法人キャッシュフロー - 要求に合わせた表示項目
   const corporateData = {
     labels: years,
     datasets: [
       {
         label: '売上',
         data: years.map(year => {
-          const cf = cashFlow[year];
-          return cf ? cf.corporateRevenue : 0;
+          // 法人の全ての収入項目を合計
+          let totalIncome = 0;
+          incomeData.corporate.forEach(item => {
+            totalIncome += item.amounts[year] || 0;
+          });
+          return totalIncome;
         }),
         borderColor: 'rgb(255, 99, 132)',
         backgroundColor: 'rgba(255, 99, 132, 0.5)',
@@ -130,76 +220,66 @@ export function SimulationResults() {
       {
         label: '経費',
         data: years.map(year => {
-          const cf = cashFlow[year];
-          return cf ? cf.corporateExpense : 0;
+          // 法人の全ての支出項目を合計
+          let totalExpense = 0;
+          expenseData.corporate.forEach(item => {
+            totalExpense += item.amounts[year] || 0;
+          });
+          return totalExpense;
         }),
         borderColor: 'rgb(53, 162, 235)',
         backgroundColor: 'rgba(53, 162, 235, 0.5)',
       },
       {
-        label: '法人資産',
-        data: years.map(year => cashFlow[year]?.corporateTotalAssets || 0),
-        borderColor: 'rgb(255, 205, 86)',
-        backgroundColor: 'rgba(255, 205, 86, 0.5)',
+        label: '総資産',
+        data: years.map(year => {
+          const cf = cashFlow[year];
+          return cf ? cf.corporateTotalAssets : 0;
+        }),
+        borderColor: 'rgb(255, 159, 64)',
+        backgroundColor: 'rgba(255, 159, 64, 0.5)',
       },
+      {
+        label: '総負債',
+        data: years.map(year => {
+          const cf = cashFlow[year];
+          // 法人の負債総額を計算
+          let totalLiability = 0;
+          
+          // store内の負債データを使用
+          store.liabilityData.corporate.forEach(liability => {
+            totalLiability += Math.abs(liability.amounts[year] || 0);
+          });
+          
+          // cashFlowにある場合はそれを使用
+          if (cf && cf.corporateLiabilityTotal !== undefined) {
+            return cf.corporateLiabilityTotal;
+          }
+          
+          return totalLiability;
+        }),
+        borderColor: 'rgb(255, 99, 71)',
+        backgroundColor: 'rgba(255, 99, 71, 0.5)',
+      },
+      {
+        label: '純資産',
+        data: years.map(year => {
+          const cf = cashFlow[year];
+          return cf ? (cf.corporateNetAssets || (cf.corporateTotalAssets - (cf.corporateLiabilityTotal || 0))) : 0;
+        }),
+        borderColor: 'rgb(153, 102, 255)',
+        backgroundColor: 'rgba(153, 102, 255, 0.5)',
+      }
     ],
   };
 
-  const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: {
-        position: 'top' as const,
-        labels: {
-          font: {
-            size: window.innerWidth < 768 ? 10 : 12,
-          },
-        },
-      },
-    },
-    scales: {
-      y: {
-        title: {
-          display: true,
-          text: '金額（万円）',
-          font: {
-            size: window.innerWidth < 768 ? 10 : 12,
-          },
-        },
-      },
-      x: {
-        title: {
-          display: true,
-          text: '年齢',
-          font: {
-            size: window.innerWidth < 768 ? 10 : 12,
-          },
-        },
-        ticks: {
-          callback: function(value: any) {
-            const year = years[value];
-            const age = basicInfo.currentAge + (year - basicInfo.startYear);
-            return `${age}歳`;
-          },
-          font: {
-            size: window.innerWidth < 768 ? 10 : 12,
-          },
-          maxRotation: 45,
-          minRotation: 45,
-        },
-      },
-    },
-  };
-
+  // 設定条件のサマリーを生成する関数
   const getConditionSummary = () => {
-    // 給与収入の取得
-    const mainIncomeItem = incomeData.personal.find(item => item.name === '給与収入');
-    const mainIncome = mainIncomeItem ? (mainIncomeItem.amounts[basicInfo.startYear] || 0) : 0;
-    
+    const mainIncome = incomeData.personal.find(item => item.name === '給与収入')?.amounts[basicInfo.startYear] || 0;
     const conditions = [
-      `${basicInfo.currentAge}歳`,
-      `${basicInfo.occupation === 'company_employee' ? '会社員・公務員' : 
+      `開始年齢: ${basicInfo.currentAge}歳`,
+      `職業: ${basicInfo.occupation === 'company_employee' ? 
+        '会社員・公務員' : 
         basicInfo.occupation === 'self_employed' ? '自営業・フリーランス' :
         basicInfo.occupation === 'part_time_with_pension' ? 'パート（厚生年金あり）' :
         basicInfo.occupation === 'part_time_without_pension' ? 'パート（厚生年金なし）' :
@@ -217,153 +297,559 @@ export function SimulationResults() {
     return conditions.join(' | ');
   };
 
-  // PDF エクスポート機能（ブラウザの印刷機能を使用）
-  const handleExportPDF = () => {
+  // 全体データのエクスポート機能
+  const handleExportAllData = () => {
+    const data = {
+      basicInfo: store.basicInfo,
+      incomeData: store.incomeData,
+      expenseData: store.expenseData,
+      assetData: store.assetData,
+      liabilityData: store.liabilityData,
+      lifeEvents: store.lifeEvents,
+      parameters: store.parameters,
+      cashFlow: store.cashFlow,
+      exportDate: new Date().toISOString(),
+      version: '1.0'
+    };
+
+    const jsonString = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `ライフプランデータ_${new Date().toISOString().split('T')[0]}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+  // 共有URL生成機能（新機能）
+  const handleGenerateShareUrl = async () => {
+    setShareUrlStatus('generating');
+
+    try {
+      // HTMLコンテンツを生成
+      const htmlContent = generateShareableHTML();
+      
+      // HTMLをBase64エンコード
+      const encodedData = btoa(unescape(encodeURIComponent(htmlContent)));
+      
+      // 現在のURLのベース部分を取得
+      const baseUrl = window.location.origin + window.location.pathname;
+      
+      // 共有URLを生成
+      const shareUrl = `${baseUrl}#share=${encodedData}`;
+      
+      // クリップボードにコピー
+      await navigator.clipboard.writeText(shareUrl);
+      
+      setShareUrlStatus('copied');
+      
+      // 3秒後にステータスをリセット
+      setTimeout(() => {
+        setShareUrlStatus('idle');
+      }, 3000);
+      
+    } catch (error) {
+      console.error('共有URL生成エラー:', error);
+      setShareUrlStatus('error');
+      
+      // 3秒後にステータスをリセット
+      setTimeout(() => {
+        setShareUrlStatus('idle');
+      }, 3000);
+    }
+  };
+
+  // 共有用HTML生成関数
+  const generateShareableHTML = () => {
     // キャッシュフローテーブルのHTMLを生成
     const generateCashFlowTable = () => {
-      const tableHeaders = [
-        '年度', '年齢', '世帯収入', '運用収益', '生活費', '住居費', '教育費', 
-        '個人収支', '個人総資産', '売上', '経費', '法人収支', '法人総資産'
-      ];
-
-      const tableRows = years.map(year => {
-        const cf = cashFlow[year] || {};
-        const age = basicInfo.currentAge + (year - basicInfo.startYear);
-        
-        return `
-          <tr style="border-bottom: 1px solid #ddd;">
-            <td style="padding: 4px 8px; text-align: center; font-weight: bold;">${year}</td>
-            <td style="padding: 4px 8px; text-align: center;">${age}歳</td>
-            <td style="padding: 4px 8px; text-align: right;">${(cf.mainIncome || 0) + (cf.sideIncome || 0) + (cf.spouseIncome || 0)}</td>
-            <td style="padding: 4px 8px; text-align: right;">${cf.investmentIncome || 0}</td>
-            <td style="padding: 4px 8px; text-align: right;">${cf.livingExpense || 0}</td>
-            <td style="padding: 4px 8px; text-align: right;">${cf.housingExpense || 0}</td>
-            <td style="padding: 4px 8px; text-align: right;">${cf.educationExpense || 0}</td>
-            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.personalBalance || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.personalBalance || 0}</td>
-            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.personalTotalAssets || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.personalTotalAssets || 0}</td>
-            <td style="padding: 4px 8px; text-align: right;">${cf.corporateRevenue || 0}</td>
-            <td style="padding: 4px 8px; text-align: right;">${cf.corporateExpense || 0}</td>
-            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.corporateBalance || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.corporateBalance || 0}</td>
-            <td style="padding: 4px 8px; text-align: right; font-weight: bold; color: ${(cf.corporateTotalAssets || 0) >= 0 ? '#059669' : '#dc2626'};">${cf.corporateTotalAssets || 0}</td>
-          </tr>
-        `;
-      }).join('');
-
       return `
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 10px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px;">
           <thead>
-            <tr style="background-color: #f3f4f6; border-bottom: 2px solid #ddd;">
-              ${tableHeaders.map(header => 
-                `<th style="padding: 8px 4px; text-align: center; font-weight: bold; border-right: 1px solid #ddd;">${header}</th>`
-              ).join('')}
+            <tr style="background-color: #f3f4f6; font-weight: bold;">
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">年度</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">年齢</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">総収入<br>(個人)</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">生活費</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">住居費</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">教育費</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">その他支出</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">純資産<br>(個人)</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">売上<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">経費<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">総資産<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">総負債<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 6px; text-align: center;">純資産<br>(法人)</th>
             </tr>
           </thead>
           <tbody>
-            ${tableRows}
+            ${years.map(year => {
+              const cf = cashFlow[year] || {};
+              const age = basicInfo.currentAge + (year - basicInfo.startYear);
+              
+              // 個人の総収入計算
+              let personalIncome = 0;
+              if (cf.mainIncome) personalIncome += cf.mainIncome;
+              if (cf.sideIncome) personalIncome += cf.sideIncome;
+              if (cf.spouseIncome) personalIncome += cf.spouseIncome;
+              if (cf.pensionIncome) personalIncome += cf.pensionIncome;
+              if (cf.spousePensionIncome) personalIncome += cf.spousePensionIncome;
+              if (cf.investmentIncome) personalIncome += cf.investmentIncome;
+              
+              // 追加の個人収入
+              incomeData.personal.forEach(item => {
+                const basicIncomeTypes = ['給与収入', '副業収入', '配偶者収入', '年金収入', '配偶者年金収入', '運用収益'];
+                if (!basicIncomeTypes.includes(item.name)) {
+                  personalIncome += item.amounts[year] || 0;
+                }
+              });
+
+              // その他支出計算
+              let otherExpenses = cf ? (cf.otherExpense || 0) : 0;
+              if (cf && cf.loanRepayment) {
+                otherExpenses += cf.loanRepayment;
+              }
+              expenseData.personal.forEach(item => {
+                const basicExpenseTypes = ['生活費', '住居費', '教育費'];
+                if (!basicExpenseTypes.includes(item.name) && item.name !== 'その他') {
+                  otherExpenses += item.amounts[year] || 0;
+                }
+              });
+
+              // 法人の総収入計算
+              let corporateIncome = 0;
+              incomeData.corporate.forEach(item => {
+                corporateIncome += item.amounts[year] || 0;
+              });
+
+              // 法人の総支出計算
+              let corporateExpense = 0;
+              expenseData.corporate.forEach(item => {
+                corporateExpense += item.amounts[year] || 0;
+              });
+              
+              // 負債総額の計算
+              let personalLiabilityTotal = cf.personalLiabilityTotal || 0;
+              if (personalLiabilityTotal === 0) {
+                store.liabilityData.personal.forEach(liability => {
+                  personalLiabilityTotal += Math.abs(liability.amounts[year] || 0);
+                });
+              }
+              
+              let corporateLiabilityTotal = cf.corporateLiabilityTotal || 0;
+              if (corporateLiabilityTotal === 0) {
+                store.liabilityData.corporate.forEach(liability => {
+                  corporateLiabilityTotal += Math.abs(liability.amounts[year] || 0);
+                });
+              }
+              
+              // 純資産の計算
+              const personalNetAssets = cf.personalNetAssets || (cf.personalTotalAssets - personalLiabilityTotal);
+              const corporateNetAssets = cf.corporateNetAssets || (cf.corporateTotalAssets - corporateLiabilityTotal);
+              
+              return `
+                <tr style="border-bottom: 1px solid #ddd;">
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: center; font-weight: bold;">${year}</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${age}歳</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(personalIncome)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(cf.livingExpense || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(cf.housingExpense || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(cf.educationExpense || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(otherExpenses)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right; font-weight: bold;">${Math.round(personalNetAssets)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(corporateIncome)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(corporateExpense)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(cf.corporateTotalAssets || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">${Math.round(corporateLiabilityTotal)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 6px; text-align: right; font-weight: bold;">${Math.round(corporateNetAssets)}万円</td>
+                </tr>
+              `;
+            }).join('')}
           </tbody>
         </table>
       `;
     };
 
-    // 印刷用のHTMLコンテンツを作成
-    const printContent = `
+    // Chart.jsグラフを生成するスクリプト
+    const generateChartScripts = () => {
+      return `
+        // Chart.jsライブラリの読み込み
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/chart.js';
+        script.onload = function() {
+          // 個人キャッシュフローグラフ
+          const personalCtx = document.getElementById('personalChart').getContext('2d');
+          new Chart(personalCtx, {
+            type: 'line',
+            data: ${JSON.stringify(personalData)},
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                title: {
+                  display: true,
+                  text: '個人キャッシュフロー推移'
+                },
+                legend: {
+                  position: 'top'
+                }
+              },
+              scales: {
+                y: {
+                  ticks: {
+                    callback: function(value) {
+                      return value + '万円';
+                    }
+                  }
+                }
+              }
+            }
+          });
+
+          // 法人キャッシュフローグラフ
+          const corporateCtx = document.getElementById('corporateChart').getContext('2d');
+          new Chart(corporateCtx, {
+            type: 'line',
+            data: ${JSON.stringify(corporateData)},
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                title: {
+                  display: true,
+                  text: '法人キャッシュフロー推移'
+                },
+                legend: {
+                  position: 'top'
+                }
+              },
+              scales: {
+                y: {
+                  ticks: {
+                    callback: function(value) {
+                      return value + '万円';
+                    }
+                  }
+                }
+              }
+            }
+          });
+        };
+        document.head.appendChild(script);
+      `;
+    };
+
+    // 完全なHTMLドキュメントを生成
+    return `
       <!DOCTYPE html>
-      <html>
+      <html lang="ja">
       <head>
-        <meta charset="utf-8">
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>ライフプランシミュレーション結果</title>
         <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f9fafb;
+            color: #374151;
+            line-height: 1.6;
+          }
+          .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+          }
+          .header {
+            text-align: center;
+            margin-bottom: 40px;
+            border-bottom: 2px solid #e5e7eb;
+            padding-bottom: 20px;
+          }
+          .title {
+            font-size: 28px;
+            font-weight: bold;
+            color: #1f2937;
+            margin-bottom: 10px;
+          }
+          .subtitle {
+            font-size: 14px;
+            color: #6b7280;
+          }
+          .conditions {
+            background-color: #f3f4f6;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 30px;
+          }
+          .conditions-title {
+            font-weight: bold;
+            font-size: 16px;
+            margin-bottom: 10px;
+            color: #374151;
+          }
+          .conditions-text {
+            font-size: 14px;
+            color: #6b7280;
+          }
+          .section-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin: 30px 0 20px 0;
+            color: #1f2937;
+            border-left: 4px solid #3b82f6;
+            padding-left: 15px;
+          }
+          .chart-container {
+            margin: 20px 0;
+            height: 400px;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 20px;
+          }
+          .table-note {
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 15px;
+            font-style: italic;
+          }
+          .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            text-align: center;
+            font-size: 12px;
+            color: #9ca3af;
+          }
           @media print {
-            body { 
-              margin: 0; 
-              padding: 15px; 
-              font-family: 'Yu Gothic', 'Hiragino Sans', sans-serif; 
-              line-height: 1.4;
-            }
-            .page-break { page-break-before: always; }
-            .chart-container { 
-              width: 100%; 
-              height: 300px; 
-              margin: 15px 0; 
-              page-break-inside: avoid;
-            }
-            .chart-container img { 
-              width: 100%; 
-              height: auto; 
-              max-height: 300px;
-              object-fit: contain;
-            }
-            .header { 
-              text-align: center; 
-              margin-bottom: 25px; 
-              page-break-inside: avoid;
-            }
-            .conditions { 
-              background: #f8f9fa; 
-              padding: 12px; 
-              margin: 15px 0; 
-              border-radius: 5px; 
-              page-break-inside: avoid;
-              border: 1px solid #dee2e6;
-            }
-            .section-title { 
-              font-size: 16px; 
-              font-weight: bold; 
-              margin: 20px 0 10px 0; 
-              color: #1f2937;
-              border-bottom: 2px solid #3b82f6;
-              padding-bottom: 5px;
-            }
-            .condition-item { 
-              margin: 4px 0; 
-              font-size: 11px; 
-            }
-            .table-section {
-              margin: 20px 0;
-              page-break-inside: avoid;
-            }
-            .table-note {
-              font-size: 10px;
-              color: #6b7280;
-              margin-bottom: 10px;
-              font-style: italic;
+            .page-break {
+              page-break-before: always;
             }
           }
-          @page { 
-            margin: 15mm; 
-            size: A4 landscape;
+          @media (max-width: 768px) {
+            body {
+              padding: 10px;
+            }
+            .container {
+              padding: 15px;
+            }
+            .title {
+              font-size: 24px;
+            }
+            .chart-container {
+              height: 300px;
+              padding: 10px;
+            }
           }
         </style>
       </head>
       <body>
-        <div class="header">
-          <h1 style="color: #1f2937; margin-bottom: 5px;">ライフプランシミュレーション結果</h1>
-          <p style="margin: 0; color: #6b7280;">作成日: ${new Date().toLocaleDateString('ja-JP')}</p>
-        </div>
-        
-        <div class="conditions">
-          <h2 class="section-title" style="margin-top: 0;">設定条件</h2>
-          ${getConditionSummary().split(' | ').map(condition => 
-            `<div class="condition-item">• ${condition}</div>`
-          ).join('')}
-        </div>
+        <div class="container">
+          <div class="header">
+            <h1 class="title">ライフプランシミュレーション結果</h1>
+            <p class="subtitle">生成日時: ${new Date().toLocaleString('ja-JP')}</p>
+          </div>
 
-        <div class="table-section">
-          <h2 class="section-title">キャッシュフロー表</h2>
+          <div class="conditions">
+            <div class="conditions-title">設定条件</div>
+            <div class="conditions-text">${getConditionSummary()}</div>
+          </div>
+
+          <div class="section-title">個人キャッシュフロー推移</div>
+          <div class="chart-container">
+            <canvas id="personalChart"></canvas>
+          </div>
+
+          <div class="section-title">法人キャッシュフロー推移</div>
+          <div class="chart-container">
+            <canvas id="corporateChart"></canvas>
+          </div>
+
+          <div class="page-break"></div>
+
+          <div class="section-title">キャッシュフロー表</div>
           <div class="table-note">※ 金額の単位：万円　※ 赤字はマイナス、緑字はプラスを表示</div>
           ${generateCashFlowTable()}
+        
+          <div class="footer">
+            <p>このレポートはライフプランシミュレーターで自動生成されました。</p>
+            <p>共有用URL生成機能を使用して作成されています。</p>
+          </div>
         </div>
+        
+        <script>
+          ${generateChartScripts()}
+        </script>
+      </body>
+      </html>
+    `;
+  };
+
+  // PDF エクスポート機能（印刷向け）
+  const handleExportPDF = () => {
+    // キャッシュフローテーブルのHTMLを生成
+    const generateCashFlowTable = () => {
+      return `
+        <table style="width: 100%; border-collapse: collapse; font-size: 10px; margin-bottom: 20px;">
+          <thead>
+            <tr style="background-color: #f3f4f6; font-weight: bold;">
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">年度</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">年齢</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">総収入<br>(個人)</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">生活費</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">住居費</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">教育費</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">その他支出</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">純資産<br>(個人)</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">売上<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">経費<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">総資産<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">総負債<br>(法人)</th>
+              <th style="border: 1px solid #ddd; padding: 4px; text-align: center;">純資産<br>(法人)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${years.map(year => {
+              const cf = cashFlow[year] || {};
+              const age = basicInfo.currentAge + (year - basicInfo.startYear);
+              
+              // 個人の総収入計算
+              let personalIncome = 0;
+              if (cf.mainIncome) personalIncome += cf.mainIncome;
+              if (cf.sideIncome) personalIncome += cf.sideIncome;
+              if (cf.spouseIncome) personalIncome += cf.spouseIncome;
+              if (cf.pensionIncome) personalIncome += cf.pensionIncome;
+              if (cf.spousePensionIncome) personalIncome += cf.spousePensionIncome;
+              if (cf.investmentIncome) personalIncome += cf.investmentIncome;
+              
+              // 追加の個人収入
+              incomeData.personal.forEach(item => {
+                const basicIncomeTypes = ['給与収入', '副業収入', '配偶者収入', '年金収入', '配偶者年金収入', '運用収益'];
+                if (!basicIncomeTypes.includes(item.name)) {
+                  personalIncome += item.amounts[year] || 0;
+                }
+              });
+
+              // その他支出計算
+              let otherExpenses = cf ? (cf.otherExpense || 0) : 0;
+              if (cf && cf.loanRepayment) {
+                otherExpenses += cf.loanRepayment;
+              }
+              expenseData.personal.forEach(item => {
+                const basicExpenseTypes = ['生活費', '住居費', '教育費'];
+                if (!basicExpenseTypes.includes(item.name) && item.name !== 'その他') {
+                  otherExpenses += item.amounts[year] || 0;
+                }
+              });
+
+              // 法人の総収入計算
+              let corporateIncome = 0;
+              incomeData.corporate.forEach(item => {
+                corporateIncome += item.amounts[year] || 0;
+              });
+
+              // 法人の総支出計算
+              let corporateExpense = 0;
+              expenseData.corporate.forEach(item => {
+                corporateExpense += item.amounts[year] || 0;
+              });
+              
+              // 負債総額の計算
+              let personalLiabilityTotal = cf.personalLiabilityTotal || 0;
+              if (personalLiabilityTotal === 0) {
+                store.liabilityData.personal.forEach(liability => {
+                  personalLiabilityTotal += Math.abs(liability.amounts[year] || 0);
+                });
+              }
+              
+              let corporateLiabilityTotal = cf.corporateLiabilityTotal || 0;
+              if (corporateLiabilityTotal === 0) {
+                store.liabilityData.corporate.forEach(liability => {
+                  corporateLiabilityTotal += Math.abs(liability.amounts[year] || 0);
+                });
+              }
+              
+              // 純資産の計算
+              const personalNetAssets = cf.personalNetAssets || (cf.personalTotalAssets - personalLiabilityTotal);
+              const corporateNetAssets = cf.corporateNetAssets || (cf.corporateTotalAssets - corporateLiabilityTotal);
+              
+              return `
+                <tr style="border-bottom: 1px solid #ddd;">
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: center; font-weight: bold;">${year}</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: center;">${age}歳</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(personalIncome)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(cf.livingExpense || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(cf.housingExpense || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(cf.educationExpense || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(otherExpenses)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right; font-weight: bold;">${Math.round(personalNetAssets)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(corporateIncome)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(corporateExpense)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(cf.corporateTotalAssets || 0)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right;">${Math.round(corporateLiabilityTotal)}万円</td>
+                  <td style="border: 1px solid #ddd; padding: 4px; text-align: right; font-weight: bold;">${Math.round(corporateNetAssets)}万円</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+    };
+
+    // 印刷用HTMLを生成
+    const printHTML = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>ライフプランシミュレーション結果</title>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; margin: 20px; }
+          .header { text-align: center; margin-bottom: 20px; }
+          .title { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+          .subtitle { font-size: 14px; color: #666; }
+          .conditions { background-color: #f9f9f9; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+          .section-title { font-size: 18px; font-weight: bold; margin: 20px 0 10px 0; }
+          .table-note { font-size: 12px; color: #666; margin-bottom: 10px; }
+          .footer { margin-top: 30px; text-align: center; font-size: 12px; color: #999; }
+          @media print { .page-break { page-break-before: always; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1 class="title">ライフプランシミュレーション結果</h1>
+          <p class="subtitle">生成日時: ${new Date().toLocaleString('ja-JP')}</p>
+        </div>
+
+        <div class="conditions">
+          <strong>設定条件:</strong><br>
+          ${getConditionSummary()}
+        </div>
+
+        <div class="page-break"></div>
+        
+        <h2 class="section-title">キャッシュフロー表</h2>
+        <div class="table-note">※ 金額の単位：万円　※ 赤字はマイナス、緑字はプラスを表示</div>
+        ${generateCashFlowTable()}
 
         <div class="page-break"></div>
         
         <div class="section-title">個人キャッシュフロー推移</div>
         <div class="chart-container">
-          <img src="${personalChartRef.current?.canvas?.toDataURL('image/png') || ''}" alt="個人キャッシュフローグラフ" />
+          <img src="${personalChartRef.current?.canvas?.toDataURL('image/png') || ''}" alt="個人キャッシュフローグラフ" style="max-width: 100%; height: auto;" />
         </div>
 
         <div class="section-title">法人キャッシュフロー推移</div>
         <div class="chart-container">
-          <img src="${corporateChartRef.current?.canvas?.toDataURL('image/png') || ''}" alt="法人キャッシュフローグラフ" />
+          <img src="${corporateChartRef.current?.canvas?.toDataURL('image/png') || ''}" alt="法人キャッシュフローグラフ" style="max-width: 100%; height: auto;" />
         </div>
       </body>
       </html>
@@ -372,94 +858,55 @@ export function SimulationResults() {
     // 新しいウィンドウを開いて印刷
     const printWindow = window.open('', '_blank');
     if (printWindow) {
-      printWindow.document.write(printContent);
+      printWindow.document.write(printHTML);
       printWindow.document.close();
-      
       // 画像の読み込みを待ってから印刷
       setTimeout(() => {
         printWindow.print();
-        // 印刷後にウィンドウを閉じる（ユーザーが印刷をキャンセルした場合も考慮）
-        setTimeout(() => {
-          printWindow.close();
-        }, 1000);
+        printWindow.close();
       }, 500);
-    } else {
-      alert('ポップアップがブロックされています。ポップアップを許可してから再度お試しください。');
     }
   };
 
-  // CSV エクスポート機能（既存機能を移動）
-  const handleExportCSV = () => {
-    // ヘッダー行の作成
-    const headers = [
-      '年度',
-      '年齢',
-      'イベント（個人）',
-      'イベント（法人）',
-      ...incomeData.personal.map(item => `${item.name}（万円）`),
-      ...incomeData.corporate.map(item => `${item.name}（万円）`),
-      ...expenseData.personal.map(item => `${item.name}（万円）`),
-      ...expenseData.corporate.map(item => `${item.name}（万円）`),
-      '個人収支（万円）',
-      '個人総資産（万円）',
-      '法人収支（万円）',
-      '法人総資産（万円）',
-    ];
+  // HTML エクスポート機能
+  const handleExportHTML = () => {
+    // 共有用HTMLと同じ内容を生成
+    const htmlContent = generateShareableHTML();
 
-    // データ行の作成
-    const rows = years.map(year => {
-      const cf = cashFlow[year] || {
-        personalBalance: 0,
-        personalTotalAssets: 0,
-        corporateBalance: 0,
-        corporateTotalAssets: 0
-      };
-
-      const calculateAge = (startYear: number, currentAge: number, targetYear: number) => {
-        return currentAge + (targetYear - startYear);
-      };
-
-      const getLifeEventDescription = (year: number, basicInfo: any, lifeEvents: any, type: string) => {
-        // ライフイベントの説明を取得する関数（簡易版）
-        return ''; // 実際の実装では適切なライフイベント情報を返す
-      };
-
-      return [
-        year,
-        calculateAge(basicInfo.startYear, basicInfo.currentAge, year),
-        '', // ライフイベント（個人）
-        '', // ライフイベント（法人）
-        ...incomeData.personal.map(item => item.amounts[year] || 0),
-        ...incomeData.corporate.map(item => item.amounts[year] || 0),
-        ...expenseData.personal.map(item => item.amounts[year] || 0),
-        ...expenseData.corporate.map(item => item.amounts[year] || 0),
-        cf.personalBalance,
-        cf.personalTotalAssets,
-        cf.corporateBalance,
-        cf.corporateTotalAssets,
-      ];
-    });
-
-    // CSVデータの作成
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
-    ].join('\n');
-
-    // BOMを追加してExcelで文字化けを防ぐ
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8' });
+    // HTMLファイルの保存
+    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `キャッシュフロー_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `ライフプラン_レポート_${new Date().toISOString().split('T')[0]}.html`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
   };
 
   const handleBack = () => {
     setCurrentStep(6);
+  };
+
+  // ボタンのテキストを状態に応じて変更
+  const getShareButtonText = () => {
+    switch (shareUrlStatus) {
+      case 'generating': return '生成中...';
+      case 'copied': return 'URLをコピーしました！';
+      case 'error': return 'エラーが発生しました';
+      default: return '共有URLを生成';
+    }
+  };
+
+  // ボタンの色を状態に応じて変更
+  const getShareButtonClass = () => {
+    switch (shareUrlStatus) {
+      case 'generating': return 'px-6 py-2 bg-gray-500 text-white rounded-md cursor-not-allowed';
+      case 'copied': return 'px-6 py-2 bg-green-500 text-white rounded-md';
+      case 'error': return 'px-6 py-2 bg-red-500 text-white rounded-md hover:bg-red-600';
+      default: return 'px-6 py-2 bg-purple-500 text-white rounded-md hover:bg-purple-600 flex items-center gap-2';
+    }
   };
 
   return (
@@ -486,7 +933,7 @@ export function SimulationResults() {
           <h3 className="text-lg font-semibold mb-4">
             個人キャッシュフロー
             <TermTooltip term="" width="medium">
-              個人の収入、支出、資産の推移を表示します。収入には給与、副業、年金、運用収益が含まれ、支出には生活費、住居費、教育費が含まれます。
+              個人の財務状況を表示します。総収入（給与・副業・配偶者収入・年金など）、生活費、住居費、教育費、その他支出（ローン返済を含む生活費・住居費・教育費以外の支出）、純資産（総資産-総負債）を表示しています。
             </TermTooltip>
           </h3>
           <div className="h-[50vh] md:h-[60vh]">
@@ -503,6 +950,14 @@ export function SimulationResults() {
               }}} 
               data={personalData} 
             />
+          </div>
+          <div className="text-xs text-gray-500 mt-2">
+            <p>※ 総収入：給与、副業、配偶者収入、年金、運用収益など全ての収入の合計</p>
+            <p>※ 生活費：食費、日用品、光熱費など基本的な生活に必要な支出</p>
+            <p>※ 住居費：家賃、住宅ローン、管理費など住居に関する支出</p>
+            <p>※ 教育費：学費、塾代、習い事など教育に関する支出</p>
+            <p>※ その他支出：ローン返済を含む上記以外の支出</p>
+            <p>※ 純資産：総資産から負債を差し引いた実質的な自己資産</p>
           </div>
         </div>
 
@@ -529,31 +984,60 @@ export function SimulationResults() {
               data={corporateData} 
             />
           </div>
+          <div className="text-xs text-gray-500 mt-2">
+            <p>※ 売上：法人の全ての収入の合計</p>
+            <p>※ 経費：法人の全ての支出の合計</p>
+            <p>※ 純資産：総資産から負債を差し引いた実質的な自己資産</p>
+          </div>
         </div>
       </div>
 
-      {/* エクスポートボタンを追加 */}
+      {/* エクスポートボタン */}
       <div className="bg-white p-4 rounded-lg shadow">
         <h3 className="text-lg font-semibold mb-4">エクスポート</h3>
         <div className="flex flex-wrap gap-4">
           <button
             type="button"
-            onClick={handleExportCSV}
+            onClick={handleExportAllData}
             className="px-6 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 flex items-center gap-2"
           >
-            📊 エクセル形式でエクスポート
+            全体を保存
           </button>
           <button
             type="button"
             onClick={handleExportPDF}
             className="px-6 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 flex items-center gap-2"
           >
-            📄 PDF形式でエクスポート（印刷）
+            PDF形式でエクスポート（印刷）
+          </button>
+          <button
+            type="button"
+            onClick={handleExportHTML}
+            className="px-6 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 flex items-center gap-2"
+          >
+            HTML形式でエクスポート
+          </button>
+          <button
+            type="button"
+            onClick={handleGenerateShareUrl}
+            disabled={shareUrlStatus === 'generating'}
+            className={getShareButtonClass()}
+          >
+            {shareUrlStatus === 'idle' && (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+                </svg>
+              </>
+            )}
+            {getShareButtonText()}
           </button>
         </div>
         <p className="text-sm text-gray-600 mt-2">
-          エクセル形式：詳細なデータをCSVファイルで出力します<br/>
-          PDF形式：キャッシュフロー表とグラフを含むレポートを印刷機能でPDF出力します
+          全体を保存：すべての入力データと結果をJSONファイルで保存します（続きから始める際に使用）<br/>
+          PDF形式：キャッシュフロー表とグラフを含むレポートを印刷機能でPDF出力します<br/>
+          HTML形式：グラフとデータを含むレポートをHTMLファイルとして保存します（ブラウザで閲覧可能）<br/>
+          <span className="text-purple-600 font-medium">共有URL生成：URLを生成してクリップボードにコピーします（誰でもブラウザで閲覧可能）</span>
         </p>
       </div>
 
